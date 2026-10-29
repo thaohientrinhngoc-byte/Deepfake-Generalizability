@@ -1,5 +1,5 @@
 from .metrics import calculate_eer, compute_dgs_score, evaluate_predictions
-from .dataset import DeepfakeDataset, DynamicBalancedSampler
+from .dataset import DeepfakeDataset, DynamicBalancedSampler, collate_fn
 
 __all__ = [
     "calculate_eer",
@@ -7,4 +7,5 @@ __all__ = [
     "evaluate_predictions",
     "DeepfakeDataset",
     "DynamicBalancedSampler",
+    "collate_fn",
 ]

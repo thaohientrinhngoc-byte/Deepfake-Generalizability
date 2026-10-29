@@ -42,16 +42,21 @@ def compute_dgs_score(a_internal: float, a_cross_list: list) -> float:
         a_cross_list (list of float): Out-of-distribution (cross-dataset) test performances.
 
     Returns:
-        float: DGS score.
+        float: DGS score (in the same scale as input, either [0, 1] or percentage [0, 100]).
     """
     if not a_cross_list or a_internal <= 0:
         return 0.0
 
-    a_cross_bar = float(np.mean(a_cross_list))
-    sigma_cross = float(np.std(a_cross_list, ddof=0))  # standard deviation
+    # Auto-handle both percentage (0-100) and decimal (0-1) scales
+    scale = 100.0 if a_internal > 1.0 else 1.0
+    a_int_norm = a_internal / scale
+    a_cross_norm = [float(x) / scale for x in a_cross_list]
 
-    dgs = a_cross_bar * (a_cross_bar / a_internal) * (1.0 - sigma_cross)
-    return float(dgs)
+    a_cross_bar = float(np.mean(a_cross_norm))
+    sigma_cross = float(np.std(a_cross_norm, ddof=0))  # standard deviation across cross datasets
+
+    dgs = a_cross_bar * (a_cross_bar / a_int_norm) * (1.0 - sigma_cross)
+    return float(dgs * scale)
 
 
 def evaluate_predictions(y_true: np.ndarray, y_scores: np.ndarray, threshold: float = 0.5) -> dict:

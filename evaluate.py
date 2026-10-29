@@ -29,6 +29,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import confusion_matrix, roc_curve
 
 import config
+from typing import Optional, List
 from models import SpatiotemporalDeepfakeDetector
 from utils import DeepfakeDataset, collate_fn, evaluate_predictions, compute_dgs_score
 
@@ -74,10 +75,44 @@ def evaluate_model_on_dataset(model: nn.Module, loader: DataLoader, device: torc
     return metrics
 
 
+def find_checkpoint(base_dir: str, model_name: str, train_set: Optional[str] = None) -> Optional[str]:
+    """Finds best checkpoint file under candidate paths."""
+    candidate_names = ["best_auc_model.pth", "best_loss_model.pth"]
+    model_aliases = [model_name, model_name.lower(), model_name.lower().replace("-", "_")]
+
+    subdirs = []
+    if train_set:
+        train_aliases = [train_set, train_set.lower(), train_set.upper(), train_set.replace("_", "-")]
+        for t in train_aliases:
+            for m in model_aliases:
+                subdirs.append(os.path.join(base_dir, t, m))
+    for m in model_aliases:
+        subdirs.append(os.path.join(base_dir, m))
+    subdirs.append(base_dir)
+
+    for s in subdirs:
+        for c in candidate_names:
+            p = os.path.join(s, c)
+            if os.path.isfile(p):
+                return p
+    return None
+
+
+def match_internal_dataset(train_name: str, test_names: List[str]) -> Optional[str]:
+    """Matches training dataset name against available test dataset keys."""
+    t_norm = train_name.lower().replace("-", "").replace("_", "").replace("+", "").replace(" ", "")
+    for d in test_names:
+        d_norm = d.lower().replace("-", "").replace("_", "").replace("+", "").replace(" ", "")
+        if t_norm == d_norm or t_norm in d_norm or d_norm in t_norm:
+            return d
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Cross-Dataset Deepfake Detector Evaluation")
     parser.add_argument("--checkpoints_dir", type=str, required=True, help="Directory containing trained model weights")
-    parser.add_argument("--datasets_config", type=str, required=True, help="JSON file mapping Dataset Names to directory paths")
+    parser.add_argument("--datasets_config", type=str, default="datasets.json", help="JSON file mapping Dataset Names to directory paths")
+    parser.add_argument("--train_dataset", type=str, default=None, help="Name of training dataset (e.g. DFDC, CELEB_DF, FF++) to compute DGS")
     parser.add_argument("--output_dir", type=str, default="./results", help="Directory to save evaluation artifacts")
     parser.add_argument("--batch_size", type=int, default=config.BATCH_SIZE, help="Evaluation batch size")
 
@@ -85,19 +120,20 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    if not os.path.exists(args.datasets_config):
+        raise FileNotFoundError(f"Datasets config file not found at '{args.datasets_config}'. Please create one with dataset paths.")
+
     with open(args.datasets_config, "r") as f:
         dataset_paths = json.load(f)
 
-    models_to_eval = {
-        "M_CNN_F": "m_cnn_f",
-        "M_CNN_T": "m_cnn_t",
-        "M_CL_F":  "m_cl_f",
-        "M_CL_T":  "m_cl_t",
-    }
+    models_to_eval = ["M_CNN_F", "M_CNN_T", "M_CL_F", "M_CL_T"]
 
     # Load Data Loaders
     loaders_dict = {}
     for d_name, d_path in dataset_paths.items():
+        if not os.path.exists(d_path):
+            print(f"Notice: Dataset path for '{d_name}' not found at '{d_path}', skipping.")
+            continue
         ds = DeepfakeDataset(d_path, split="test", is_train=False)
         if len(ds) > 0:
             loaders_dict[d_name] = DataLoader(
@@ -105,71 +141,103 @@ def main():
             )
             print(f"Loaded test dataset '{d_name}': {len(ds)} samples.")
 
+    if not loaders_dict:
+        print("Error: No test datasets could be loaded from datasets_config.")
+        return
+
+    # Determine training datasets to evaluate
+    train_datasets = [args.train_dataset] if args.train_dataset else [None]
+
     raw_results = []
     roc_data = {}
 
-    for model_name, folder_name in models_to_eval.items():
-        weights_path = os.path.join(args.checkpoints_dir, folder_name, "best_auc_model.pth")
-        if not os.path.exists(weights_path):
-            # Try alternate path
-            weights_path = os.path.join(args.checkpoints_dir, folder_name, "best_loss_model.pth")
+    for train_set in train_datasets:
+        for model_name in models_to_eval:
+            weights_path = find_checkpoint(args.checkpoints_dir, model_name, train_set)
+            if not weights_path:
+                print(f"Warning: Checkpoint not found for model '{model_name}' (Train set: {train_set}) under {args.checkpoints_dir}")
+                continue
 
-        if not os.path.exists(weights_path):
-            print(f"Warning: Checkpoint not found for model '{model_name}' at {weights_path}")
-            continue
+            print(f"\nEvaluating Model: {model_name} (Trained on: {train_set or 'Unspecified'})...")
+            print(f"Loaded checkpoint: {weights_path}")
+            model = SpatiotemporalDeepfakeDetector(model_type=model_name)
+            model.load_state_dict(torch.load(weights_path, map_location=device))
+            model = model.to(device)
 
-        print(f"\nEvaluating Model: {model_name}...")
-        model = SpatiotemporalDeepfakeDetector(model_type=model_name)
-        model.load_state_dict(torch.load(weights_path, map_location=device))
-        model = model.to(device)
+            model_evals = {}
+            for d_name, loader in loaders_dict.items():
+                metrics = evaluate_model_on_dataset(model, loader, device)
+                model_evals[d_name] = metrics
 
-        for d_name, loader in loaders_dict.items():
-            metrics = evaluate_model_on_dataset(model, loader, device)
-            raw_results.append({
-                "Model": model_name,
-                "Dataset": d_name,
-                "AUC": metrics["AUC"],
-                "ACC": metrics["ACC"],
-                "EER": metrics["EER"],
-                "F1-Score": metrics["F1"],
-                "Recall (Real)": metrics["Recall_Real"],
-                "Recall (Fake)": metrics["Recall_Fake"],
-                "Precision (Real)": metrics["Precision_Real"],
-                "Precision (Fake)": metrics["Precision_Fake"],
-            })
+                # Plot Confusion Matrix
+                prefix = f"{train_set}_" if train_set else ""
+                cm_filename = os.path.join(args.output_dir, f"cm_{prefix}{model_name.lower()}_{d_name.lower()}.png")
+                process_and_plot_cm(metrics["y_true"], (metrics["y_scores"] >= 0.5).astype(int), cm_filename, f"{model_name} on {d_name}")
 
-            # Plot Confusion Matrix
-            cm_filename = os.path.join(args.output_dir, f"cm_{model_name.lower()}_{d_name.lower()}.png")
-            process_and_plot_cm(metrics["y_true"], (metrics["y_scores"] >= 0.5).astype(int), cm_filename, f"{model_name} on {d_name}")
+                # Store ROC Data
+                roc_key = f"{train_set}_{d_name}" if train_set else d_name
+                if roc_key not in roc_data:
+                    roc_data[roc_key] = []
+                roc_data[roc_key].append({
+                    "Model": model_name,
+                    "y_true": metrics["y_true"],
+                    "y_scores": metrics["y_scores"],
+                    "auc": metrics["AUC"],
+                })
 
-            # Store ROC Data
-            if d_name not in roc_data:
-                roc_data[d_name] = []
-            roc_data[d_name].append({
-                "Model": model_name,
-                "y_true": metrics["y_true"],
-                "y_scores": metrics["y_scores"],
-                "auc": metrics["AUC"],
-            })
+            # Calculate DGS if train_set is specified or inferrable
+            internal_key = match_internal_dataset(train_set, list(loaders_dict.keys())) if train_set else None
+            dgs_value = None
+            if internal_key and internal_key in model_evals:
+                a_internal = model_evals[internal_key]["AUC"]
+                cross_aucs = [m["AUC"] for k, m in model_evals.items() if k != internal_key and not np.isnan(m["AUC"])]
+                if cross_aucs:
+                    dgs_value = compute_dgs_score(a_internal, cross_aucs)
+                    print(f"==> Dataset Generalizability Score (DGS_AUC) for {train_set} on {model_name}: {dgs_value:.4f} ({dgs_value*100:.2f}%)")
 
-        del model
-        gc.collect()
-        torch.cuda.empty_cache()
+            for d_name, metrics in model_evals.items():
+                raw_results.append({
+                    "Training Set": train_set if train_set else "N/A",
+                    "Model": model_name,
+                    "Testing Set": d_name,
+                    "AUC": metrics["AUC"],
+                    "ACC": metrics["ACC"],
+                    "EER": metrics["EER"],
+                    "F1-Score": metrics["F1"],
+                    "Recall (Real)": metrics["Recall_Real"],
+                    "Recall (Fake)": metrics["Recall_Fake"],
+                    "Precision (Real)": metrics["Precision_Real"],
+                    "Precision (Fake)": metrics["Precision_Fake"],
+                    "DGS_AUC": dgs_value if (internal_key and d_name == internal_key) else (dgs_value if dgs_value is not None else np.nan),
+                })
+
+            del model
+            gc.collect()
+            torch.cuda.empty_cache()
 
     if not raw_results:
-        print("No valid results computed.")
+        print("No valid evaluation results were computed.")
         return
 
     df_results = pd.DataFrame(raw_results)
     df_results.to_csv(os.path.join(args.output_dir, "complete_testing_report.csv"), index=False)
 
-    # Pivot Tables
-    auc_matrix = df_results.pivot(index="Model", columns="Dataset", values="AUC")
-    print("\n" + "=" * 60)
+    # Pivot Matrix
+    auc_matrix = df_results.pivot(index="Model", columns="Testing Set", values="AUC")
+    print("\n" + "=" * 65)
     print(" AUC PERFORMANCE MATRIX ")
-    print("=" * 60)
+    print("=" * 65)
     print(auc_matrix.to_string())
     auc_matrix.to_csv(os.path.join(args.output_dir, "matrix_auc.csv"))
+
+    # Summary table formatted matching paper
+    summary_cols = ["Training Set", "Model", "Testing Set", "AUC", "ACC", "F1-Score", "Recall (Real)", "Recall (Fake)", "EER", "DGS_AUC"]
+    summary_cols = [c for c in summary_cols if c in df_results.columns]
+    print("\n" + "=" * 65)
+    print(" EXPERIMENTAL SUMMARY REPORT ")
+    print("=" * 65)
+    print(df_results[summary_cols].to_string(index=False))
+    df_results[summary_cols].to_csv(os.path.join(args.output_dir, "summary_table.csv"), index=False)
 
     # Plot ROC Curves
     for d_name, models_list in roc_data.items():

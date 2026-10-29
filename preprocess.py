@@ -5,7 +5,7 @@ Features:
   - 30-frame uniform sampling per video
   - SCRFD face detector + IoU bounding-box tracking
   - Bounding-box filling mechanism for missing segments (up to 5 consecutive frames)
-  - Sharpness quality control via Laplacian variance
+  - Sharpness quality audit logging via Laplacian variance
   - 0.4 crop margin expansion + 224x224 linear interpolation resize
   - Lock-free sequential execution (prevents OpenCV CPU thrashing)
 """
@@ -23,12 +23,15 @@ import uuid
 import gc
 import numpy as np
 import pandas as pd
-import onnxruntime as ort
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 from tqdm import tqdm
-import insightface
+
+try:
+    import insightface
+except ImportError:
+    insightface = None
 
 import config
 
