@@ -6,7 +6,7 @@ This document serves as the central directory providing official links to all da
 
 ## 1. Preprocessed Datasets (Optimized for Training & Evaluation)
 
-The datasets listed in the table below have been thoroughly prepared and are completely ready for immediate integration into training and testing workflows. Each individual dataset has successfully passed through our customized 5-stage unified preprocessing pipeline. This comprehensive pipeline guarantees high data quality through the following specific operations: uniform sampling of exactly 30 frames, robust face detection powered by SCRFD combined with Intersection over Union (IoU) tracking, sharpness quality assessment via Laplacian variance, and a final standardized 224x224 pixel resolution crop.
+The datasets listed in the table below have been thoroughly prepared and are completely ready for immediate integration into training and testing workflows. Each individual dataset has successfully passed through our customized 4-phase unified preprocessing pipeline (**Sampling, Detection, Tracking, and Refinement**). This comprehensive pipeline guarantees high data quality through the following specific operations: uniform sampling of exactly 30 frames, robust face detection powered by SCRFD combined with Intersection over Union (IoU) tracking and missing-segment bounding-box filling (up to 5 consecutive frames), sharpness quality monitoring via Laplacian variance recorded in the quality audit log, and a final standardized 224x224 pixel resolution crop with a 0.4 margin.
 
 | Dataset Name | Benchmark Target | Kaggle Preprocessed Dataset URL |
 | :--- | :--- | :--- |

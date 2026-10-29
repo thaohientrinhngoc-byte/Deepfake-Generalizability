@@ -7,8 +7,12 @@ Evaluates 4 Spatiotemporal Models across 4 Benchmark Datasets:
   - Celeb-DF (v2)
   - WildDeepfake (Wild)
 
+Supports both single-seed checkpoints and multi-seed (42, 36, 75) evaluation
+to reproduce the Mean ± Std (%) tables and DGS_AUC scores in Tables III–VI of the paper.
+
 Outputs:
   - Complete metrics CSV & Pivot Matrices (AUC, ACC, EER, F1, DGS)
+  - Summary Table (Mean ± Std %) matching Paper Tables III–VI
   - Confusion Matrix plots per model-dataset combination
   - Combined ROC Curves per dataset
 """
@@ -17,6 +21,7 @@ import os
 import gc
 import json
 import argparse
+from typing import Optional, List, Dict, Tuple
 import torch
 import torch.nn as nn
 import numpy as np
@@ -29,7 +34,6 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import confusion_matrix, roc_curve
 
 import config
-from typing import Optional, List
 from models import SpatiotemporalDeepfakeDetector
 from utils import DeepfakeDataset, collate_fn, evaluate_predictions, compute_dgs_score
 
@@ -75,8 +79,12 @@ def evaluate_model_on_dataset(model: nn.Module, loader: DataLoader, device: torc
     return metrics
 
 
-def find_checkpoint(base_dir: str, model_name: str, train_set: Optional[str] = None) -> Optional[str]:
-    """Finds best checkpoint file under candidate paths."""
+def find_checkpoints(base_dir: str, model_name: str, train_set: Optional[str] = None) -> List[Tuple[str, str]]:
+    """
+    Finds checkpoint files under candidate paths.
+    Returns a list of (seed_label, checkpoint_path) tuples.
+    Supports multi-seed subdirectories (e.g. seed_42, seed_36, seed_75) or single checkpoint.
+    """
     candidate_names = ["best_auc_model.pth", "best_loss_model.pth"]
     model_aliases = [model_name, model_name.lower(), model_name.lower().replace("-", "_")]
 
@@ -90,12 +98,28 @@ def find_checkpoint(base_dir: str, model_name: str, train_set: Optional[str] = N
         subdirs.append(os.path.join(base_dir, m))
     subdirs.append(base_dir)
 
+    # First check for multi-seed subdirectories (seed_42, seed_36, seed_75)
+    for s in subdirs:
+        if not os.path.isdir(s):
+            continue
+        found_seeds = []
+        for seed_val in config.EXPERIMENT_SEEDS:
+            seed_dir = os.path.join(s, f"seed_{seed_val}")
+            for c in candidate_names:
+                p = os.path.join(seed_dir, c)
+                if os.path.isfile(p):
+                    found_seeds.append((str(seed_val), p))
+                    break
+        if found_seeds:
+            return found_seeds
+
+    # Fallback to single checkpoint
     for s in subdirs:
         for c in candidate_names:
             p = os.path.join(s, c)
             if os.path.isfile(p):
-                return p
-    return None
+                return [(str(config.RANDOM_SEED), p)]
+    return []
 
 
 def match_internal_dataset(train_name: str, test_names: List[str]) -> Optional[str]:
@@ -106,6 +130,18 @@ def match_internal_dataset(train_name: str, test_names: List[str]) -> Optional[s
         if t_norm == d_norm or t_norm in d_norm or d_norm in t_norm:
             return d
     return None
+
+
+def fmt_mean_std_pct(values: List[float]) -> str:
+    """Formats a list of decimal metric values [0, 1] as 'XX.XX ± YY.YY' in percentage."""
+    pct_vals = [v * 100.0 for v in values if not np.isnan(v)]
+    if not pct_vals:
+        return "N/A"
+    if len(pct_vals) == 1:
+        return f"{pct_vals[0]:.2f}"
+    mean_v = float(np.mean(pct_vals))
+    std_v = float(np.std(pct_vals, ddof=1))
+    return f"{mean_v:.2f} ± {std_v:.2f}"
 
 
 def main():
@@ -145,99 +181,119 @@ def main():
         print("Error: No test datasets could be loaded from datasets_config.")
         return
 
-    # Determine training datasets to evaluate
     train_datasets = [args.train_dataset] if args.train_dataset else [None]
 
     raw_results = []
+    summary_rows = []
     roc_data = {}
 
     for train_set in train_datasets:
         for model_name in models_to_eval:
-            weights_path = find_checkpoint(args.checkpoints_dir, model_name, train_set)
-            if not weights_path:
+            seed_ckpts = find_checkpoints(args.checkpoints_dir, model_name, train_set)
+            if not seed_ckpts:
                 print(f"Warning: Checkpoint not found for model '{model_name}' (Train set: {train_set}) under {args.checkpoints_dir}")
                 continue
 
-            print(f"\nEvaluating Model: {model_name} (Trained on: {train_set or 'Unspecified'})...")
-            print(f"Loaded checkpoint: {weights_path}")
-            model = SpatiotemporalDeepfakeDetector(model_type=model_name)
-            model.load_state_dict(torch.load(weights_path, map_location=device))
-            model = model.to(device)
+            print(f"\nEvaluating Model: {model_name} (Trained on: {train_set or 'Unspecified'}, Seeds: {[s for s, _ in seed_ckpts]})...")
+            per_dataset_seed_metrics: Dict[str, List[dict]] = {d_name: [] for d_name in loaders_dict}
 
-            model_evals = {}
-            for d_name, loader in loaders_dict.items():
-                metrics = evaluate_model_on_dataset(model, loader, device)
-                model_evals[d_name] = metrics
+            for seed_idx, (seed_label, weights_path) in enumerate(seed_ckpts):
+                print(f"  [Seed {seed_label}] Checkpoint: {weights_path}")
+                model = SpatiotemporalDeepfakeDetector(model_type=model_name)
+                model.load_state_dict(torch.load(weights_path, map_location=device))
+                model = model.to(device)
 
-                # Plot Confusion Matrix
-                prefix = f"{train_set}_" if train_set else ""
-                cm_filename = os.path.join(args.output_dir, f"cm_{prefix}{model_name.lower()}_{d_name.lower()}.png")
-                process_and_plot_cm(metrics["y_true"], (metrics["y_scores"] >= 0.5).astype(int), cm_filename, f"{model_name} on {d_name}")
+                for d_name, loader in loaders_dict.items():
+                    metrics = evaluate_model_on_dataset(model, loader, device)
+                    per_dataset_seed_metrics[d_name].append(metrics)
 
-                # Store ROC Data
-                roc_key = f"{train_set}_{d_name}" if train_set else d_name
-                if roc_key not in roc_data:
-                    roc_data[roc_key] = []
-                roc_data[roc_key].append({
-                    "Model": model_name,
-                    "y_true": metrics["y_true"],
-                    "y_scores": metrics["y_scores"],
-                    "auc": metrics["AUC"],
-                })
+                    raw_results.append({
+                        "Training Set": train_set if train_set else "N/A",
+                        "Model": model_name,
+                        "Seed": seed_label,
+                        "Testing Set": d_name,
+                        "AUC": metrics["AUC"],
+                        "ACC": metrics["ACC"],
+                        "EER": metrics["EER"],
+                        "F1-Score": metrics["F1"],
+                        "Recall (Real)": metrics["Recall_Real"],
+                        "Recall (Fake)": metrics["Recall_Fake"],
+                        "Precision (Real)": metrics["Precision_Real"],
+                        "Precision (Fake)": metrics["Precision_Fake"],
+                    })
 
-            # Calculate DGS if train_set is specified or inferrable
+                    # Plot Confusion Matrix & ROC for primary seed
+                    if seed_idx == 0:
+                        prefix = f"{train_set}_" if train_set else ""
+                        cm_filename = os.path.join(args.output_dir, f"cm_{prefix}{model_name.lower()}_{d_name.lower()}.png")
+                        process_and_plot_cm(metrics["y_true"], (metrics["y_scores"] >= 0.5).astype(int), cm_filename, f"{model_name} on {d_name}")
+
+                        roc_key = f"{train_set}_{d_name}" if train_set else d_name
+                        if roc_key not in roc_data:
+                            roc_data[roc_key] = []
+                        roc_data[roc_key].append({
+                            "Model": model_name,
+                            "y_true": metrics["y_true"],
+                            "y_scores": metrics["y_scores"],
+                            "auc": metrics["AUC"],
+                        })
+
+                del model
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+            # Compute mean AUCs per dataset across seeds to compute DGS_AUC (Equation 1)
+            mean_aucs = {
+                d_name: float(np.mean([m["AUC"] for m in m_list]))
+                for d_name, m_list in per_dataset_seed_metrics.items() if m_list
+            }
             internal_key = match_internal_dataset(train_set, list(loaders_dict.keys())) if train_set else None
-            dgs_value = None
-            if internal_key and internal_key in model_evals:
-                a_internal = model_evals[internal_key]["AUC"]
-                cross_aucs = [m["AUC"] for k, m in model_evals.items() if k != internal_key and not np.isnan(m["AUC"])]
+            dgs_pct_str = ""
+            if internal_key and internal_key in mean_aucs:
+                a_internal = mean_aucs[internal_key]
+                cross_aucs = [v for k, v in mean_aucs.items() if k != internal_key and not np.isnan(v)]
                 if cross_aucs:
-                    dgs_value = compute_dgs_score(a_internal, cross_aucs)
-                    print(f"==> Dataset Generalizability Score (DGS_AUC) for {train_set} on {model_name}: {dgs_value:.4f} ({dgs_value*100:.2f}%)")
+                    dgs_val = compute_dgs_score(a_internal, cross_aucs)
+                    dgs_pct_str = f"{dgs_val * 100.0:.2f}"
+                    print(f"==> Dataset Generalizability Score (DGS_AUC) for {train_set} on {model_name}: {dgs_pct_str}%")
 
-            for d_name, metrics in model_evals.items():
-                raw_results.append({
+            for d_name, m_list in per_dataset_seed_metrics.items():
+                summary_rows.append({
                     "Training Set": train_set if train_set else "N/A",
                     "Model": model_name,
                     "Testing Set": d_name,
-                    "AUC": metrics["AUC"],
-                    "ACC": metrics["ACC"],
-                    "EER": metrics["EER"],
-                    "F1-Score": metrics["F1"],
-                    "Recall (Real)": metrics["Recall_Real"],
-                    "Recall (Fake)": metrics["Recall_Fake"],
-                    "Precision (Real)": metrics["Precision_Real"],
-                    "Precision (Fake)": metrics["Precision_Fake"],
-                    "DGS_AUC": dgs_value if (internal_key and d_name == internal_key) else (dgs_value if dgs_value is not None else np.nan),
+                    "AUC (%)": fmt_mean_std_pct([m["AUC"] for m in m_list]),
+                    "ACC (%)": fmt_mean_std_pct([m["ACC"] for m in m_list]),
+                    "F1-Score (%)": fmt_mean_std_pct([m["F1"] for m in m_list]),
+                    "Recall Real (%)": fmt_mean_std_pct([m["Recall_Real"] for m in m_list]),
+                    "Recall Fake (%)": fmt_mean_std_pct([m["Recall_Fake"] for m in m_list]),
+                    "EER (%)": fmt_mean_std_pct([m["EER"] for m in m_list]),
+                    "DGS_AUC (%)": dgs_pct_str if (internal_key and d_name == internal_key) else "",
                 })
-
-            del model
-            gc.collect()
-            torch.cuda.empty_cache()
 
     if not raw_results:
         print("No valid evaluation results were computed.")
         return
 
-    df_results = pd.DataFrame(raw_results)
-    df_results.to_csv(os.path.join(args.output_dir, "complete_testing_report.csv"), index=False)
+    df_raw = pd.DataFrame(raw_results)
+    df_raw.to_csv(os.path.join(args.output_dir, "complete_testing_report.csv"), index=False)
 
-    # Pivot Matrix
-    auc_matrix = df_results.pivot(index="Model", columns="Testing Set", values="AUC")
+    # Mean AUC Pivot Matrix
+    auc_matrix = df_raw.groupby(["Model", "Testing Set"])["AUC"].mean().unstack()
     print("\n" + "=" * 65)
-    print(" AUC PERFORMANCE MATRIX ")
+    print(" MEAN AUC PERFORMANCE MATRIX ")
     print("=" * 65)
     print(auc_matrix.to_string())
     auc_matrix.to_csv(os.path.join(args.output_dir, "matrix_auc.csv"))
 
-    # Summary table formatted matching paper
-    summary_cols = ["Training Set", "Model", "Testing Set", "AUC", "ACC", "F1-Score", "Recall (Real)", "Recall (Fake)", "EER", "DGS_AUC"]
-    summary_cols = [c for c in summary_cols if c in df_results.columns]
-    print("\n" + "=" * 65)
-    print(" EXPERIMENTAL SUMMARY REPORT ")
-    print("=" * 65)
-    print(df_results[summary_cols].to_string(index=False))
-    df_results[summary_cols].to_csv(os.path.join(args.output_dir, "summary_table.csv"), index=False)
+    # Summary table formatted matching Paper Tables III–VI
+    df_summary = pd.DataFrame(summary_rows)
+    print("\n" + "=" * 85)
+    print(" EXPERIMENTAL SUMMARY REPORT (Unit: %, Mean ± Std across Seeds) ")
+    print("=" * 85)
+    print(df_summary.to_string(index=False))
+    df_summary.to_csv(os.path.join(args.output_dir, "summary_table.csv"), index=False)
 
     # Plot ROC Curves
     for d_name, models_list in roc_data.items():

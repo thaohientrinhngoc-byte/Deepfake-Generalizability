@@ -1,53 +1,76 @@
-# Generalizability Evaluation on Datasets using Spatiotemporal Architectures in Deepfake Detection
+# Generalizability Evaluation on Deepfake Video Datasets using Spatiotemporal Architectures
 
-Official implementation accompanying the research paper: **"Generalizability Evaluation on Datasets using Spatiotemporal Architectures in Deepfake Detection"**  
+Official implementation accompanying the research paper: **"Generalizability Evaluation on Deepfake Video Datasets using Spatiotemporal Architectures"**  
 *Faculty of Artificial Intelligence, FPT University, Danang Campus, Vietnam*
 
 ---
 
 ## Abstract
 
-Deepfake detection plays an essential role in mitigating the negative social impacts of AI-manipulated videos. However, existing detectors often struggle to generalize when deployed in real-world scenarios due to dataset bias. In this work, an experimental framework is designed to systematically evaluate the generalizability of datasets using spatiotemporal architectures. 
+Deepfake detection plays an important role in reducing the negative social impacts of manipulated videos. However, existing models often struggle to generalize when deployed in real-world scenarios due to dataset bias. In this work, an experimental framework is designed to evaluate the generalizability of a dataset using spatiotemporal architectures.
 
-Our framework employs an **EfficientNet-B0** backbone to extract spatial features, followed by either a **Global Average Pooling (GAP)** layer or a **3-layer Long Short-Term Memory (LSTM)** module to capture temporal dynamics. Intra-dataset and inter-dataset evaluations are conducted across four major benchmarks:
+Our spatiotemporal model employs an **EfficientNet-B0** backbone to extract spatial features, followed by either a **Global Average Pooling (GAP)** layer or a **3-layer Long Short-Term Memory (LSTM)** module to capture temporal dynamics. Intra-dataset and inter-dataset evaluations are conducted across four datasets:
 1. **FaceForensics++ (FF++)** (c23 compression)
 2. **DeepFake Detection Challenge (DFDC-10)**
 3. **Celeb-DF (v2)**
-4. **WildDeepfake** (In-the-wild out-of-distribution benchmark)
+4. **WildDeepfake** (In-the-wild cross-test benchmark)
 
-Additionally, we introduce the **Dataset Generalizability Score (DGS)** to quantify dataset transferability across model architectures.
+Additionally, the **Dataset Generalizability Score (DGS)** is introduced as a unified metric combining intra-dataset and inter-dataset classification performances to quantify dataset transferability.
 
 ---
 
-## Model Configurations (Table I Alignment)
+## Model Configurations (Table I)
 
-All models share the same EfficientNet-B0 visual backbone pre-trained on ImageNet, evaluated under two backbone adaptation strategies (Fully Frozen vs. Fine-tuning Blocks 7 & 8) and two temporal aggregation heads (GAP vs. 3-Layer LSTM):
+All four configurations share the same ImageNet pre-trained **EfficientNet-B0** backbone, evaluated under two backbone adaptation strategies (Fully Frozen vs. Fine-tuning top two blocks: Blocks 7 & 8) and two temporal modeling heads (Global Avg Pooling vs. 3-Layer LSTM):
 
-| Configuration Name | LaTeX Symbol | Backbone Adaptation Strategy | Temporal Modeling Head | Classification Layer |
+| Configuration | LaTeX Symbol | Backbone Adaptation | Temporal Modeling | Classification Layer |
 | :--- | :--- | :--- | :--- | :--- |
-| **`M_CNN_F`** | $M_{CNN-F}$ | Frozen (All parameters fixed) | Global Average Pooling | Linear Layer |
-| **`M_CNN_T`** | $M_{CNN-T}$ | Fine-tuned (Blocks 7 & 8 learnable) | Global Average Pooling | Linear Layer |
-| **`M_CL_F`** | $M_{CL-F}$ | Frozen (All parameters fixed) | 3-Layer LSTM | Linear Layer |
-| **`M_CL_T`** | $M_{CL-T}$ | Fine-tuned (Blocks 7 & 8 learnable) | 3-Layer LSTM | Linear Layer |
+| **`M_CNN_F`** | $M_{CNN-F}$ | Frozen | Global Avg Pooling | Linear |
+| **`M_CNN_T`** | $M_{CNN-T}$ | Fine-tuned (Blocks 7, 8) | Global Avg Pooling | Linear |
+| **`M_CL_F`** | $M_{CL-F}$ | Frozen | 3-Layer LSTM | Linear |
+| **`M_CL_T`** | $M_{CL-T}$ | Fine-tuned (Blocks 7, 8) | 3-Layer LSTM | Linear |
 
 ---
 
-## Dataset Generalizability Score (DGS)
+## Dataset Splits (Table II)
 
-The **Dataset Generalizability Score (DGS)** evaluates how effectively knowledge learned from a given training dataset transfers to unseen external benchmark datasets:
+Number of videos (with $N = 30$ uniform frames extracted per video at $224 \times 224$ resolution) for training, validation, and testing splits (partitioned with seed `42`):
+
+| Dataset | Training Set | Validation Set | Testing Set |
+| :--- | :---: | :---: | :---: |
+| **FaceForensics++ (c23)** | 4,800 | 600 | 600 |
+| **DFDC-10** | 6,027 | 753 | 756 |
+| **Celeb-DF (v2)** | 4,911 | 1,061 | 557 |
+| **WildDeepfake** | — | — | 1,230 |
+
+---
+
+## Dataset Generalizability Score (DGS — Equation 1)
+
+To evaluate how effectively knowledge learned from a training dataset transfers to unseen external benchmarks, **DGS** is formulated in Section 3.3 (Equation 1) as:
 
 $$\text{DGS} = \bar{A}_{\text{cross}} \times \left( \frac{\bar{A}_{\text{cross}}}{A_{\text{internal}}} \right) \times (1 - \sigma_{\text{cross}})$$
 
 Where:
-- $\bar{A}_{\text{cross}}$: Mean classification performance (e.g. AUC) across all out-of-distribution cross-test datasets.
-- $A_{\text{internal}}$: In-distribution test performance on the training dataset's testing split.
-- $\sigma_{\text{cross}}$: Standard deviation of cross-dataset performances (penalizes high variance across evaluation domains).
+- $\bar{A}_{\text{cross}}$: Mean inter-dataset AUC over the remaining three unseen cross-test datasets.
+- $\sigma_{\text{cross}}$: Sample standard deviation (`ddof=1`) of inter-dataset AUC over the three unseen cross-test datasets.
+- $A_{\text{internal}}$: Intra-dataset AUC on the testing split of the same dataset used for training.
 
 ---
 
-## Experimental Benchmark Results ($M_{CL-T}$)
+## Experimental Results (Tables III–VI, 3 Seeds: 42, 36, 75)
 
-Cross-dataset generalizability evaluation of the best performing architecture ($M_{CL-T}$, Tuned EfficientNet-B0 + 3-Layer LSTM) across 3 independent random seeds:
+Each model configuration was trained and evaluated across three independent runs using random seeds **42, 36, and 75** (controlling weight initialization, balanced 1:1 batch sampling, and data augmentation). Results are reported in percentage (`%`) as $\text{mean} \pm \text{standard deviation}$:
+
+### Summary of $\text{DGS}_\text{AUC}$ (%) Across All Models
+
+| Training Dataset | $M_{CNN-F}$ (Table III) | $M_{CNN-T}$ (Table IV) | $M_{CL-F}$ (Table V) | $M_{CL-T}$ (Table VI) |
+| :--- | :---: | :---: | :---: | :---: |
+| **DFDC** | 40.74 | 43.08 | 33.43 | **46.24** |
+| **CELEB_DF** | 40.50 | 37.39 | 41.57 | 41.12 |
+| **FF++** | **47.75** | **48.78** | **47.01** | 44.35 |
+
+### Detailed Results for $M_{CL-T}$ (Table VI, Unit: %)
 
 | Training Set | Testing Set | AUC (%) | ACC (%) | F1-Score (%) | Recall Real (%) | Recall Fake (%) | EER (%) | $\text{DGS}_\text{AUC}$ |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -90,9 +113,9 @@ cd Deepfake-Generalizability
 pip install -r requirements.txt
 ```
 
-### 2. Dataset Preprocessing
+### 2. Dataset Preprocessing (4-Phase Pipeline)
 
-To extract 30 uniform frames per video with SCRFD face detection and IoU tracking:
+To extract 30 uniform frames per video with SCRFD face detection, IoU tracking, and refinement:
 
 ```bash
 python preprocess.py \
@@ -103,24 +126,25 @@ python preprocess.py \
   --crop_margin 0.4
 ```
 
-### 3. Model Training
+### 3. Model Training (Single Seed or 3-Seed Protocol)
 
-Train any of the 4 paper configurations (`M_CNN_F`, `M_CNN_T`, `M_CL_F`, `M_CL_T`):
+Train any of the 4 paper configurations (`M_CNN_F`, `M_CNN_T`, `M_CL_F`, `M_CL_T`) across the three paper seeds (`42, 36, 75`):
 
 ```bash
-# Train Tuned CNN-LSTM model (M_CL_T)
+# Train Tuned CNN-LSTM model (M_CL_T) across all 3 random seeds (42, 36, 75)
 python train.py \
   --model M_CL_T \
   --data_dir ./processed_dataset \
   --output_dir ./models_checkpoints \
   --epochs 50 \
   --batch_size 32 \
-  --lr 0.0001
+  --lr 0.0001 \
+  --seeds 42 36 75
 ```
 
-### 4. Cross-Dataset Matrix Evaluation
+### 4. Cross-Dataset Matrix Evaluation & DGS Computation
 
-To evaluate trained checkpoints across all 4 benchmark datasets and automatically compute DGS:
+To evaluate trained checkpoints across all 4 benchmark datasets and automatically compute `Mean ± Std (%)` and `DGS_AUC`:
 
 ```bash
 python evaluate.py \
@@ -138,7 +162,7 @@ If you find this repository useful for your research, please cite:
 
 ```bibtex
 @inproceedings{trinh2026generalizability,
-  title={Generalizability Evaluation on Datasets using Spatiotemporal Architectures in Deepfake Detection},
+  title={Generalizability Evaluation on Deepfake Video Datasets using Spatiotemporal Architectures},
   author={Ngoc Thao Hien Trinh and Nguyen Dinh Hoang and Nguyen Huu Gia Bao and Quoc-Trinh Vo},
   booktitle={2026 International Conference on Cognitive and Intelligent Systems (ICogSys 2026)},
   year={2026}

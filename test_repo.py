@@ -1,5 +1,5 @@
 """
-Verification test for model initialization, forward pass, and DGS metric.
+Verification test for model initialization, forward pass, and DGS metric (Equation 1).
 """
 
 import torch
@@ -19,13 +19,21 @@ def test_models():
 
 
 def test_dgs():
-    print("\nTesting DGS Score calculation...")
-    # Example from paper Section 4.2: FF++ internal AUC = 0.8608, cross AUCs = [0.6874, 0.7500, 0.6180]
-    a_internal = 0.8608
-    a_cross = [0.6874, 0.7500, 0.6180]
-    dgs = compute_dgs_score(a_internal, a_cross)
-    assert round(dgs, 4) == 0.5093, f"Expected 0.5093, got {dgs:.4f}"
-    print(f"  [SUCCESS] Calculated DGS score: {dgs:.4f} (matches paper Section 4.2: 0.5093)")
+    print("\nTesting DGS Score calculation against Paper Tables III–VI (Equation 1)...")
+    # Table III (M_CNN-F on FF++): internal AUC = 76.47%, cross AUCs = [56.64%, 67.47%, 62.29%] -> DGS = 47.75%
+    dgs_ff_cnn_f = compute_dgs_score(76.47, [56.64, 67.47, 62.29])
+    assert round(dgs_ff_cnn_f, 2) == 47.75, f"Expected 47.75, got {dgs_ff_cnn_f:.2f}"
+    print(f"  [SUCCESS] Table III (M_CNN-F, FF++) DGS_AUC: {dgs_ff_cnn_f:.2f}% (matches paper: 47.75%)")
+
+    # Table VI (M_CL-T on DFDC): internal AUC = 99.48%, cross AUCs = [78.77%, 61.97%, 71.91%] -> DGS = 46.24%
+    dgs_dfdc_cl_t = compute_dgs_score(99.48, [78.77, 61.97, 71.91])
+    assert round(dgs_dfdc_cl_t, 2) == 46.24, f"Expected 46.24, got {dgs_dfdc_cl_t:.2f}"
+    print(f"  [SUCCESS] Table VI  (M_CL-T, DFDC)  DGS_AUC: {dgs_dfdc_cl_t:.2f}% (matches paper: 46.24%)")
+
+    # Table VI (M_CL-T on FF++): internal AUC = 91.38%, cross AUCs = [59.63%, 74.88%, 64.39%] -> DGS = 44.35%
+    dgs_ff_cl_t = compute_dgs_score(91.38, [59.63, 74.88, 64.39])
+    assert round(dgs_ff_cl_t, 2) == 44.35, f"Expected 44.35, got {dgs_ff_cl_t:.2f}"
+    print(f"  [SUCCESS] Table VI  (M_CL-T, FF++)  DGS_AUC: {dgs_ff_cl_t:.2f}% (matches paper: 44.35%)")
 
 
 if __name__ == "__main__":

@@ -1,16 +1,19 @@
 """
 Training script for Spatiotemporal Deepfake Detectors.
 
-Supports Paper Models:
+Supports Paper Models (Table I):
   - M_CNN_F ($M_{CNN-F}$): Frozen CNN Backbone + GAP
   - M_CNN_T ($M_{CNN-T}$): Tuned CNN Backbone (Blocks 7, 8) + GAP
   - M_CL_F  ($M_{CL-F}$) : Frozen CNN Backbone + 3-Layer LSTM
   - M_CL_T  ($M_{CL-T}$) : Tuned CNN Backbone (Blocks 7, 8) + 3-Layer LSTM
+
+Supports single-seed and multi-seed (42, 36, 75) training protocols as described in Section 4.1.
 """
 
 import os
 import gc
 import json
+import shutil
 import random
 import logging
 import argparse
@@ -31,7 +34,8 @@ from utils import DeepfakeDataset, DynamicBalancedSampler, collate_fn, evaluate_
 
 
 def get_logger(exp_dir: str) -> logging.Logger:
-    logger = logging.getLogger("train_logger")
+    logger_name = f"train_logger_{os.path.abspath(exp_dir)}"
+    logger = logging.getLogger(logger_name)
     if logger.handlers:
         return logger
     logger.setLevel(logging.INFO)
@@ -97,15 +101,18 @@ def train_experiment(
     batch_size: int = config.BATCH_SIZE,
     base_lr: float = config.DEFAULT_LR,
     seed: int = config.RANDOM_SEED,
-):
+    use_seed_subdir: bool = False,
+) -> dict:
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    exp_dir = os.path.join(output_dir, model_type.lower().replace("-", "_"))
+    model_folder = model_type.lower().replace("-", "_")
+    base_exp_dir = os.path.join(output_dir, model_folder)
+    exp_dir = os.path.join(base_exp_dir, f"seed_{seed}") if use_seed_subdir else base_exp_dir
     os.makedirs(exp_dir, exist_ok=True)
     logger = get_logger(exp_dir)
 
-    logger.info(f"=== Starting Training: Model {model_type} ===")
+    logger.info(f"=== Starting Training: Model {model_type} | Seed {seed} ===")
     logger.info(f"Device: {device} | Output Directory: {exp_dir}")
 
     # Load Data
@@ -195,17 +202,25 @@ def train_experiment(
     best_model_path = os.path.join(exp_dir, "best_auc_model.pth")
     if os.path.exists(best_model_path):
         model.load_state_dict(torch.load(best_model_path, map_location=device))
+        if use_seed_subdir and not os.path.exists(os.path.join(base_exp_dir, "best_auc_model.pth")):
+            shutil.copy2(best_model_path, os.path.join(base_exp_dir, "best_auc_model.pth"))
 
     test_metrics = run_evaluation(model, test_loader, criterion, device)
     logger.info(
-        f"--- TEST RESULTS --- Loss: {test_metrics['Loss']:.4f} | ACC: {test_metrics['ACC']:.4f} | "
+        f"--- TEST RESULTS (Seed {seed}) --- Loss: {test_metrics['Loss']:.4f} | ACC: {test_metrics['ACC']:.4f} | "
         f"AUC: {test_metrics['AUC']:.4f} | EER: {test_metrics['EER']:.4f}"
     )
 
+    clean_metrics = {k: float(v) for k, v in test_metrics.items() if isinstance(v, (int, float))}
     with open(os.path.join(exp_dir, "test_results.json"), "w") as f:
-        json.dump({k: float(v) for k, v in test_metrics.items() if isinstance(v, (int, float))}, f, indent=2)
+        json.dump(clean_metrics, f, indent=2)
 
     logger.info("Training experiment finished successfully.")
+    del model
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return clean_metrics
 
 
 if __name__ == "__main__":
@@ -216,16 +231,41 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=50, help="Maximum training epochs")
     parser.add_argument("--batch_size", type=int, default=config.BATCH_SIZE, help="Mini-batch size")
     parser.add_argument("--lr", type=float, default=config.DEFAULT_LR, help="Initial learning rate")
-    parser.add_argument("--seed", type=int, default=config.RANDOM_SEED, help="Random seed")
+    parser.add_argument("--seed", type=int, default=config.RANDOM_SEED, help="Single random seed (default: 42)")
+    parser.add_argument("--seeds", type=int, nargs="+", default=None, help="Multiple random seeds (e.g. --seeds 42 36 75)")
 
     args = parser.parse_args()
 
-    train_experiment(
-        model_type=args.model,
-        data_dir=args.data_dir,
-        output_dir=args.output_dir,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        base_lr=args.lr,
-        seed=args.seed,
-    )
+    if args.seeds and len(args.seeds) > 0:
+        all_seed_metrics = []
+        for s in args.seeds:
+            m = train_experiment(
+                model_type=args.model,
+                data_dir=args.data_dir,
+                output_dir=args.output_dir,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                base_lr=args.lr,
+                seed=s,
+                use_seed_subdir=True,
+            )
+            all_seed_metrics.append(m)
+
+        # Report Mean ± Std across seeds (in %)
+        print(f"\n=== MULTI-SEED SUMMARY ({args.model}, Seeds={args.seeds}) ===")
+        for key in ["AUC", "ACC", "F1", "Recall_Real", "Recall_Fake", "EER"]:
+            vals = [m[key] * 100.0 for m in all_seed_metrics if key in m]
+            if vals:
+                ddof = 1 if len(vals) > 1 else 0
+                print(f"  {key:12s}: {np.mean(vals):.2f} ± {np.std(vals, ddof=ddof):.2f} (%)")
+    else:
+        train_experiment(
+            model_type=args.model,
+            data_dir=args.data_dir,
+            output_dir=args.output_dir,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            base_lr=args.lr,
+            seed=args.seed,
+            use_seed_subdir=False,
+        )

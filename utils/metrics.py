@@ -1,7 +1,7 @@
 """
 Evaluation Metrics & Dataset Generalizability Score (DGS) Calculation.
 
-Implements Section 3.3 Equation 2 from the paper:
+Implements Section 3.3 Equation 1 from the paper:
     DGS = A_cross_mean * (A_cross_mean / A_internal) * (1 - sigma_cross)
 """
 
@@ -33,13 +33,17 @@ def calculate_eer(y_true: np.ndarray, y_scores: np.ndarray) -> float:
 
 def compute_dgs_score(a_internal: float, a_cross_list: list) -> float:
     """
-    Computes Dataset Generalizability Score (DGS) as introduced in Section 3.3 Equation 2:
+    Computes Dataset Generalizability Score (DGS) as introduced in Section 3.3 Equation 1:
 
         DGS = A_cross_bar * (A_cross_bar / A_internal) * (1 - sigma_cross)
 
+    where A_cross_bar and sigma_cross are the mean and sample standard deviation (ddof=1)
+    of inter-dataset AUC over the unseen cross-test datasets, and A_internal is the
+    intra-dataset AUC on the testing split of the training dataset.
+
     Args:
-        a_internal (float): In-distribution test performance (e.g. AUC or Accuracy).
-        a_cross_list (list of float): Out-of-distribution (cross-dataset) test performances.
+        a_internal (float): In-distribution test performance (AUC).
+        a_cross_list (list of float): Out-of-distribution (cross-dataset) test performances (AUCs).
 
     Returns:
         float: DGS score (in the same scale as input, either [0, 1] or percentage [0, 100]).
@@ -53,7 +57,7 @@ def compute_dgs_score(a_internal: float, a_cross_list: list) -> float:
     a_cross_norm = [float(x) / scale for x in a_cross_list]
 
     a_cross_bar = float(np.mean(a_cross_norm))
-    # Sample standard deviation (ddof=1, divided by N-1) as used in Paper Section 3.3 and Table VI
+    # Sample standard deviation (ddof=1, divided by N-1) as specified in Paper Section 3.3
     ddof = 1 if len(a_cross_norm) > 1 else 0
     sigma_cross = float(np.std(a_cross_norm, ddof=ddof))
 
