@@ -20,11 +20,12 @@ def test_models():
 
 def test_dgs():
     print("\nTesting DGS Score calculation...")
-    # Example: FF++ internal AUC = 0.8608, cross AUCs = [0.6874, 0.7500, 0.6180]
+    # Example from paper Section 4.2: FF++ internal AUC = 0.8608, cross AUCs = [0.6874, 0.7500, 0.6180]
     a_internal = 0.8608
     a_cross = [0.6874, 0.7500, 0.6180]
     dgs = compute_dgs_score(a_internal, a_cross)
-    print(f"  [SUCCESS] Calculated DGS score: {dgs:.4f}")
+    assert round(dgs, 4) == 0.5093, f"Expected 0.5093, got {dgs:.4f}"
+    print(f"  [SUCCESS] Calculated DGS score: {dgs:.4f} (matches paper Section 4.2: 0.5093)")
 
 
 if __name__ == "__main__":

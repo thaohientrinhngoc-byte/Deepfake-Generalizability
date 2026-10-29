@@ -53,7 +53,9 @@ def compute_dgs_score(a_internal: float, a_cross_list: list) -> float:
     a_cross_norm = [float(x) / scale for x in a_cross_list]
 
     a_cross_bar = float(np.mean(a_cross_norm))
-    sigma_cross = float(np.std(a_cross_norm, ddof=0))  # standard deviation across cross datasets
+    # Sample standard deviation (ddof=1, divided by N-1) as used in Paper Section 3.3 and Table VI
+    ddof = 1 if len(a_cross_norm) > 1 else 0
+    sigma_cross = float(np.std(a_cross_norm, ddof=ddof))
 
     dgs = a_cross_bar * (a_cross_bar / a_int_norm) * (1.0 - sigma_cross)
     return float(dgs * scale)
